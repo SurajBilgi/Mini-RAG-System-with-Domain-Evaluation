@@ -200,8 +200,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 For questions, issues, or feature requests:
 - Create an issue on GitHub
-- Email: support@minirag.com
-- Documentation: [docs.minirag.com](https://docs.minirag.com)
+
 
 ## 🎯 Sample Questions & Answers
 
