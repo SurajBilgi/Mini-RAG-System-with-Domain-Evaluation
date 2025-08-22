@@ -31,6 +31,13 @@ try:
     from sentence_transformers import SentenceTransformer
     import numpy as np
 
+    # Hugging Face imports
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    from langchain_community.llms import HuggingFacePipeline
+    from langchain.chains import RetrievalQA
+    from transformers import pipeline
+    import torch
+
 except ImportError as e:
     st.error(f"Import error: {e}")
     st.error(
@@ -382,6 +389,8 @@ class RAGSystem:
         self.chain = None
         self.memory = None
         self.documents = []
+        self.model_provider = "openai"  # Track which provider is being used
+        self.hf_pipeline = None  # Store HF pipeline
 
     def initialize_embeddings(
         self, api_key: str, model_name: str = "text-embedding-ada-002"
@@ -390,9 +399,30 @@ class RAGSystem:
         try:
             os.environ["OPENAI_API_KEY"] = api_key
             self.embeddings = OpenAIEmbeddings(model=model_name)
+            self.model_provider = "openai"
             print(f"✅ Embeddings initialized with {model_name}")
         except Exception as e:
             raise ValueError(f"Failed to initialize embeddings: {str(e)}")
+
+    def initialize_hf_embeddings(
+        self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    ):
+        """Initialize Hugging Face embeddings"""
+        try:
+            model_kwargs = {"device": "cpu"}
+            if torch.cuda.is_available():
+                model_kwargs["device"] = "cuda"
+                print("🚀 Using GPU acceleration")
+
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name=model_name,
+                model_kwargs=model_kwargs,
+                encode_kwargs={"normalize_embeddings": True},
+            )
+            self.model_provider = "huggingface"
+            print(f"✅ Hugging Face Embeddings initialized with {model_name}")
+        except Exception as e:
+            raise ValueError(f"Failed to initialize HF embeddings: {str(e)}")
 
     def load_documents(self, uploaded_files, text_input: str = "") -> List[Document]:
         """Load documents from various sources"""
@@ -578,16 +608,264 @@ class RAGSystem:
         if not self.vectorstore:
             raise ValueError("Vector store not initialized")
 
-        llm = ChatOpenAI(model=model_name, temperature=temperature, streaming=True)
+        # Initialize LLM based on provider
+        if self.model_provider == "openai":
+            llm = ChatOpenAI(model=model_name, temperature=temperature, streaming=True)
 
-        self.memory = ConversationBufferWindowMemory(
-            k=10, memory_key="chat_history", return_messages=True, output_key="answer"
-        )
+            # Set up memory for OpenAI (conversational)
+            self.memory = ConversationBufferWindowMemory(
+                k=10,
+                memory_key="chat_history",
+                return_messages=True,
+                output_key="answer",
+            )
+        elif self.model_provider == "huggingface":
+            # Initialize Hugging Face pipeline
+            if not self.hf_pipeline:
+                try:
+                    # Use a simple, reliable model for text generation
+                    valid_hf_models = ["gpt2", "distilgpt2", "microsoft/DialoGPT-small"]
+                    hf_model = (
+                        model_name if model_name in valid_hf_models else "distilgpt2"
+                    )
+
+                    print(f"Loading Hugging Face model: {hf_model}")
+
+                    # Try a simpler approach with direct model loading
+                    from transformers import AutoTokenizer, AutoModelForCausalLM
+
+                    tokenizer = AutoTokenizer.from_pretrained(hf_model)
+                    model = AutoModelForCausalLM.from_pretrained(hf_model)
+
+                    # Set pad token if not present
+                    if tokenizer.pad_token is None:
+                        tokenizer.pad_token = tokenizer.eos_token
+
+                    # Create a custom LLM class
+                    class SimpleHuggingFaceLLM(HuggingFacePipeline):
+                        def __init__(self, tokenizer, model):
+                            self.tokenizer = tokenizer
+                            self.model = model
+
+                        def _call(self, prompt: str, stop=None, run_manager=None):
+                            try:
+                                # Prepare input with better formatting
+                                formatted_prompt = (
+                                    f"Context: {prompt}\n\nProvide a helpful answer:\n"
+                                )
+
+                                # Tokenize input
+                                inputs = self.tokenizer.encode(
+                                    formatted_prompt, return_tensors="pt"
+                                )
+
+                                # Limit input length
+                                if inputs.shape[1] > 400:
+                                    inputs = inputs[:, -400:]  # Take last 400 tokens
+
+                                # Generate with proper parameters
+                                with torch.no_grad():
+                                    outputs = self.model.generate(
+                                        inputs,
+                                        max_new_tokens=50,
+                                        min_length=inputs.shape[1] + 10,
+                                        do_sample=True,
+                                        temperature=0.8,
+                                        top_p=0.9,
+                                        pad_token_id=tokenizer.pad_token_id,
+                                        eos_token_id=tokenizer.eos_token_id,
+                                        repetition_penalty=1.2,
+                                        num_return_sequences=1,
+                                    )
+
+                                # Decode output
+                                response = self.tokenizer.decode(
+                                    outputs[0], skip_special_tokens=True
+                                )
+
+                                # Clean response
+                                if formatted_prompt in response:
+                                    response = response.replace(
+                                        formatted_prompt, ""
+                                    ).strip()
+
+                                print(f"Raw model output: '{response}'")
+
+                                # Further cleaning
+                                if response and len(response.strip()) > 0:
+                                    # Remove common artifacts
+                                    cleaned = response.strip()
+                                    lines = [
+                                        line.strip()
+                                        for line in cleaned.split("\n")
+                                        if line.strip()
+                                    ]
+                                    if lines:
+                                        cleaned = " ".join(
+                                            lines[:3]
+                                        )  # Take first 3 non-empty lines
+
+                                    print(f"Cleaned response: '{cleaned}'")
+                                    return (
+                                        cleaned
+                                        if cleaned
+                                        else "I can provide information based on the documents, but need a more specific question."
+                                    )
+
+                                return "I can see the relevant information in the documents. Please try asking a more specific question."
+
+                            except Exception as e:
+                                print(f"Simple HF LLM error: {e}")
+                                return "I'm having trouble generating a response. The information is available in the documents, but please try rephrasing your question."
+
+                    self.hf_pipeline = SimpleHuggingFaceLLM(tokenizer, model)
+                    print(f"✅ Simple Hugging Face model {hf_model} initialized")
+
+                except Exception as e:
+                    print(f"Error loading simple HF model: {e}")
+
+                    # Fallback to pipeline approach
+                    try:
+                        # Configure pipeline
+                        pipe = pipeline(
+                            "text-generation",
+                            model=hf_model,
+                            device=-1,  # Use CPU for reliability
+                            return_full_text=False,
+                            max_length=None,  # Remove max_length to avoid conflict
+                            truncation=True,
+                        )
+
+                        # Create a wrapper for better responses
+                        class SafeHuggingFacePipeline(HuggingFacePipeline):
+                            def _call(self, prompt: str, stop=None, run_manager=None):
+                                try:
+                                    # Clean and shorten prompt to avoid token limit issues
+                                    if len(prompt) > 200:
+                                        # Take the last part which usually contains the question
+                                        prompt = prompt[-200:]
+
+                                    # Simple, direct prompt format
+                                    clean_prompt = f"Question: {prompt}\n\nAnswer:"
+
+                                    result = self.pipeline(
+                                        clean_prompt,
+                                        max_new_tokens=100,  # Use only max_new_tokens
+                                        min_length=10,  # Ensure minimum output length
+                                        do_sample=True,
+                                        temperature=0.7,
+                                        top_p=0.9,
+                                        pad_token_id=50256,
+                                        eos_token_id=50256,
+                                        repetition_penalty=1.2,
+                                        num_return_sequences=1,
+                                        truncation=True,
+                                    )
+
+                                    print(f"HF Generation result: {result}")
+
+                                    if isinstance(result, list) and len(result) > 0:
+                                        if (
+                                            isinstance(result[0], dict)
+                                            and "generated_text" in result[0]
+                                        ):
+                                            generated = result[0]["generated_text"]
+                                            print(f"Raw generated text: '{generated}'")
+                                            print(
+                                                f"Generated text length: {len(generated)}"
+                                            )
+                                            if generated and len(generated.strip()) > 0:
+                                                # Clean up the response
+                                                cleaned = generated.strip()
+                                                # Remove any repeated prompt parts
+                                                if "Answer:" in cleaned:
+                                                    cleaned = cleaned.split("Answer:")[
+                                                        -1
+                                                    ].strip()
+                                                if "Question:" in cleaned:
+                                                    # Remove everything before and including "Question:"
+                                                    parts = cleaned.split("Question:")
+                                                    cleaned = (
+                                                        parts[-1].strip()
+                                                        if len(parts) > 1
+                                                        else cleaned
+                                                    )
+
+                                                print(f"Cleaned text: '{cleaned}'")
+                                                final_answer = (
+                                                    cleaned
+                                                    if cleaned
+                                                    else "I need more context to provide a complete answer."
+                                                )
+                                                print(f"Final answer: '{final_answer}'")
+                                                return final_answer
+                                        elif isinstance(result[0], str):
+                                            print(f"String result: '{result[0]}'")
+                                            return result[0].strip()
+
+                                    return "Based on the provided documents, I can see relevant information but the model didn't generate a complete response. Please try rephrasing your question."
+
+                                except Exception as e:
+                                    print(f"HF Pipeline error: {e}")
+                                    return "I'm experiencing technical difficulties with text generation. Please try a simpler question or use OpenAI."
+
+                        self.hf_pipeline = SafeHuggingFacePipeline(pipeline=pipe)
+                        print(f"✅ Fallback Hugging Face model {hf_model} initialized")
+
+                    except Exception as e2:
+                        print(f"Error loading Hugging Face model: {e2}")
+
+                        # Simple fallback that's compatible with LangChain
+                        from langchain.llms.base import LLM
+
+                        class DummyLLM(LLM):
+                            @property
+                            def _llm_type(self) -> str:
+                                return "dummy"
+
+                            def _call(
+                                self, prompt: str, stop=None, run_manager=None
+                            ) -> str:
+                                return "I'm using a fallback system due to model loading issues. Please try with OpenAI or check your Hugging Face model configuration."
+
+                        self.hf_pipeline = DummyLLM()
+
+            llm = self.hf_pipeline
+            # No memory for Hugging Face models (simpler approach)
+            self.memory = None
 
         # Create a custom prompt template to ensure document usage
         from langchain.prompts import PromptTemplate
 
-        template = """You are a helpful AI assistant. Use the following pieces of context from the documents to answer the question. If you don't know the answer based on the provided context, say so clearly.
+        if self.model_provider == "huggingface":
+            # Very simple template for HF models
+            template = """Context: {context}
+
+Question: {question}
+
+Answer:"""
+
+            prompt = PromptTemplate(
+                input_variables=["context", "question"],
+                template=template,
+            )
+
+            # Create retriever
+            retriever = self.vectorstore.as_retriever(
+                search_type="similarity", search_kwargs={"k": 3}
+            )
+
+            # Use RetrievalQA for Hugging Face
+            self.chain = RetrievalQA.from_chain_type(
+                llm=llm,
+                chain_type="stuff",
+                retriever=retriever,
+                return_source_documents=True,
+                chain_type_kwargs={"prompt": prompt},
+            )
+        else:
+            # Original OpenAI template and chain
+            template = """You are a helpful AI assistant. Use the following pieces of context from the documents to answer the question. If you don't know the answer based on the provided context, say so clearly.
 
 Context from documents:
 {context}
@@ -599,42 +877,86 @@ Question: {question}
 
 Please provide a detailed answer based on the context from the documents above. If the context doesn't contain relevant information, clearly state that you don't have access to that specific information in the provided documents."""
 
-        prompt = PromptTemplate(
-            input_variables=["context", "chat_history", "question"],
-            template=template,
-        )
+            prompt = PromptTemplate(
+                input_variables=["context", "chat_history", "question"],
+                template=template,
+            )
 
-        # Create retriever with more documents and better search
-        retriever = self.vectorstore.as_retriever(
-            search_type="similarity", search_kwargs={"k": 5}  # Retrieve more documents
-        )
+            # Create retriever with more documents and better search
+            retriever = self.vectorstore.as_retriever(
+                search_type="similarity", search_kwargs={"k": 5}
+            )
 
-        self.chain = ConversationalRetrievalChain.from_llm(
-            llm=llm,
-            retriever=retriever,
-            memory=self.memory,
-            return_source_documents=True,
-            verbose=True,
-            combine_docs_chain_kwargs={"prompt": prompt},
-        )
+            # Only use memory if it exists (OpenAI case)
+            if self.memory:
+                self.chain = ConversationalRetrievalChain.from_llm(
+                    llm=llm,
+                    retriever=retriever,
+                    memory=self.memory,
+                    return_source_documents=True,
+                    verbose=True,
+                    combine_docs_chain_kwargs={"prompt": prompt},
+                )
+            else:
+                # Fallback to simple RetrievalQA if no memory
+                self.chain = RetrievalQA.from_chain_type(
+                    llm=llm,
+                    chain_type="stuff",
+                    retriever=retriever,
+                    return_source_documents=True,
+                    chain_type_kwargs={"prompt": prompt},
+                )
 
     def get_response(self, query: str, callback_handler):
         """Get streaming response from the RAG system with better retrieval"""
         if not self.chain:
             raise ValueError("QA chain not initialized")
 
+        print(f"🔍 Processing query with {self.model_provider}: {query}")
+
         # Test retrieval before generating response
         if self.vectorstore:
             test_docs = self.vectorstore.similarity_search(query, k=3)
-            print(f"Retrieved {len(test_docs)} documents for query: {query}")
+            print(f"📚 Retrieved {len(test_docs)} documents for query: {query}")
             for i, doc in enumerate(test_docs):
                 print(f"Doc {i+1}: {doc.page_content[:100]}...")
 
-        response = self.chain(
-            {"question": query},
-            callbacks=[callback_handler] if callback_handler else [],
-        )
-        return response
+        try:
+            # Use different input keys based on provider
+            if self.model_provider == "huggingface":
+                print("🤗 Using Hugging Face RetrievalQA chain")
+                # RetrievalQA expects 'query' key
+                response = self.chain(
+                    {"query": query},
+                    callbacks=[callback_handler] if callback_handler else [],
+                )
+                print(f"HF Response keys: {response.keys()}")
+                # Extract answer and source docs from RetrievalQA response
+                answer = response.get("result", "No response generated")
+                source_docs = response.get("source_documents", [])
+            else:
+                print("🔮 Using OpenAI ConversationalRetrievalChain")
+                # ConversationalRetrievalChain expects 'question' key
+                response = self.chain(
+                    {"question": query},
+                    callbacks=[callback_handler] if callback_handler else [],
+                )
+                print(f"OpenAI Response keys: {response.keys()}")
+                # Extract from standard ConversationalRetrievalChain response
+                answer = response["answer"]
+                source_docs = response.get("source_documents", [])
+
+            print(f"✅ Final answer: {answer[:100]}...")
+            print(f"📄 Source docs count: {len(source_docs)}")
+
+            # Return unified format
+            return {"answer": answer, "source_documents": source_docs}
+        except Exception as e:
+            print(f"❌ Error generating response: {e}")
+            import traceback
+
+            traceback.print_exc()
+            raise e
 
 
 class EvaluationMetrics:
@@ -767,25 +1089,55 @@ def main():
     with st.sidebar:
         st.markdown("### ⚙️ System Configuration")
 
-        # API Key Section
-        st.markdown("#### 🔑 OpenAI Configuration")
-        api_key = st.text_input(
-            "API Key",
-            type="password",
-            placeholder="sk-...",
-            help="Enter your OpenAI API key to get started",
+        # Model Provider Selection
+        st.markdown("#### 🤖 Model Provider")
+        provider = st.selectbox(
+            "Choose Provider",
+            ["OpenAI", "Hugging Face (Free)"],
+            help="Select between paid OpenAI models or free Hugging Face models",
         )
 
-        if api_key:
-            st.success("🔓 API Key Connected!")
-        else:
-            st.warning("🔒 API Key Required")
+        # Set provider key for logic
+        provider_key = "openai" if provider == "OpenAI" else "huggingface"
 
-        if api_key:
+        # API Key Section
+        if provider == "OpenAI":
+            st.markdown("##### 🔑 OpenAI Configuration")
+            api_key = st.text_input(
+                "API Key",
+                type="password",
+                placeholder="sk-...",
+                help="Enter your OpenAI API key to get started",
+            )
+
+            if api_key:
+                st.success("🔓 API Key Connected!")
+            else:
+                st.warning("🔒 API Key Required")
+        else:  # Hugging Face
+            st.markdown("##### 🤗 Hugging Face (Free)")
+            st.info("🆓 No API key required! Uses local models.")
+            api_key = None
+
+        # Show configuration only if we have API key OR using Hugging Face
+        if api_key or provider_key == "huggingface":
             # Model Configuration
             st.markdown("#### 🧠 AI Model Selection")
 
-            model_options = ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo-preview"]
+            if provider_key == "openai":
+                model_options = ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo-preview"]
+                embedding_options = [
+                    "text-embedding-ada-002",
+                    "text-embedding-3-small",
+                    "text-embedding-3-large",
+                ]
+            else:  # huggingface
+                model_options = ["gpt2", "distilgpt2", "microsoft/DialoGPT-small"]
+                embedding_options = [
+                    "sentence-transformers/all-MiniLM-L6-v2",
+                    "sentence-transformers/paraphrase-MiniLM-L6-v2",
+                ]
+
             selected_model = st.selectbox(
                 "Choose Model",
                 model_options,
@@ -820,23 +1172,33 @@ def main():
                 )
                 embedding_model = st.selectbox(
                     "🎯 Embedding Model",
-                    [
-                        "text-embedding-ada-002",
-                        "text-embedding-3-small",
-                        "text-embedding-3-large",
-                    ],
-                    help=("Choose the embedding model for document " "processing"),
+                    embedding_options,
+                    help="Choose the embedding model for document processing",
                 )
 
-            # Initialize embeddings
+            # Initialize embeddings based on provider
             if not st.session_state.rag_system.embeddings:
                 with st.spinner("🚀 Initializing AI..."):
-                    st.session_state.rag_system.initialize_embeddings(
-                        api_key, embedding_model
-                    )
-                st.markdown(
-                    create_status_card("AI System Ready!", "🚀"), unsafe_allow_html=True
-                )
+                    try:
+                        if provider_key == "openai":
+                            st.session_state.rag_system.initialize_embeddings(
+                                api_key, embedding_model
+                            )
+                        else:  # huggingface
+                            st.session_state.rag_system.initialize_hf_embeddings(
+                                embedding_model
+                            )
+                        st.markdown(
+                            create_status_card("AI System Ready!", "🚀"),
+                            unsafe_allow_html=True,
+                        )
+                    except Exception as e:
+                        st.error(f"Failed to initialize AI: {str(e)}")
+                        if provider_key == "huggingface":
+                            st.info(
+                                "💡 First time using Hugging Face models? "
+                                "They need to download first (this may take a few minutes)."
+                            )
 
         # Enhanced Evaluation Toggle
         st.markdown("#### 📊 Evaluation Settings")
@@ -906,13 +1268,13 @@ def main():
                 st.metric("🎯 Avg Quality", f"{avg_quality:.2f}")
 
     # Main Content
-    if not api_key:
+    if not (api_key or provider_key == "huggingface"):
         st.markdown(
             """
             <div class="upload-section">
                 <h2>🔐 Welcome to Mini RAG System!</h2>
-                <p>Please enter your OpenAI API key in the sidebar to begin</p>
-                <p>🚀 Upload documents • 💬 Ask questions • 📊 Get insights</p>
+                <p>Please select a model provider and configure it in the sidebar to begin</p>
+                <p>�� Upload documents • 📊 Ask questions • 📊 Get insights</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -938,7 +1300,7 @@ def main():
             "Choose files",
             accept_multiple_files=True,
             type=["pdf", "txt", "csv", "doc", "docx"],
-            help=("Supported: PDF, TXT, CSV, DOC, DOCX • " "Max 200MB per file"),
+            help="Supported: PDF, TXT, CSV, DOC, DOCX • Max 200MB per file",
             label_visibility="collapsed",
         )
 
@@ -985,7 +1347,7 @@ def main():
                     st.session_state.rag_system.create_vectorstore(chunks)
                     st.success("AI knowledge base ready")
 
-                    # Setup QA chain
+                    # Setup QA chain with provider-specific handling
                     status_text.text("Initializing AI assistant...")
                     progress_bar.progress(100)
                     st.session_state.rag_system.setup_qa_chain(
@@ -1018,9 +1380,15 @@ def main():
 
             if clear_button:
                 st.session_state.rag_system = RAGSystem()
-                st.session_state.rag_system.initialize_embeddings(
-                    api_key, embedding_model
-                )
+                # Re-initialize with current provider
+                if provider_key == "openai" and api_key:
+                    st.session_state.rag_system.initialize_embeddings(
+                        api_key, embedding_model
+                    )
+                elif provider_key == "huggingface":
+                    st.session_state.rag_system.initialize_hf_embeddings(
+                        embedding_model
+                    )
                 st.session_state.documents_loaded = False
                 st.session_state.chat_history = []
                 st.session_state.performance_data = []

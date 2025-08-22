@@ -1,0 +1,38 @@
+{
+  "timestamp": "2025-08-22T13:51:20.836916",
+  "total_messages": 4,
+  "chat_history": [
+    {
+      "role": "user",
+      "content": "when was the company founded"
+    },
+    {
+      "role": "assistant",
+      "content": "Based on the information provided in the documents, the company Cadre AI was founded in 2024.",
+      "sources": [
+        "test.pdf",
+        "test.pdf",
+        "test.pdf",
+        "test.pdf",
+        "AI role.pdf"
+      ],
+      "latency": 1.1477530002593994
+    },
+    {
+      "role": "user",
+      "content": "can you tell me about the company"
+    },
+    {
+      "role": "assistant",
+      "content": "Based on the information provided in the documents, Cadre AI is a business consulting and services company based in San Diego, California. The company was founded in 2024 and currently has 11-50 employees. Cadre AI specializes in AI integration, automation, artificial intelligence, AI strategy, data analytics, and technology integration. The company takes an \"ownership mindset\" when working with clients, aiming to transform businesses into \"future-proof\" organizations by leveraging the power of AI to achieve operational excellence and enhanced profitability. Cadre AI helps organizations unlock the power of AI to drive measurable business results, such as revenue growth, increased EBITDA, and scalability. The company's expertise lies in integrating cutting-edge AI technologies to drive efficiency, productivity, and growth for their clients.",
+      "sources": [
+        "test.pdf",
+        "test.pdf",
+        "test.pdf",
+        "test.pdf",
+        "AI role.pdf"
+      ],
+      "latency": 2.2585442066192627
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "timestamp": "2025-08-22T13:50:10.606275",
+  "total_messages": 4,
+  "chat_history": [
+    {
+      "role": "user",
+      "content": "Tell me about the benfits company is offerring"
+    },
+    {
+      "role": "assistant",
+      "content": "Based on the information provided in the documents, the company offers the usual benefits such as competitive pay and healthcare. In addition to these standard benefits, the company also provides some unique perks to its employees. These unusual benefits include a gym membership, opportunities to work in Greece during summers, having an in-office chef, and having an office located in NYC. These perks aim to enhance the overall work experience and well-being of the employees at the company.",
+      "sources": [
+        "AI role.pdf",
+        "AI role.pdf",
+        "AI role.pdf",
+        "AI role.pdf"
+      ],
+      "latency": 1.390260934829712
+    },
+    {
+      "role": "user",
+      "content": "Tell me about the Job description"
+    },
+    {
+      "role": "assistant",
+      "content": "Based on the information provided in the documents, the job description for the position of AI/ML Engineer at the company involves working on groundbreaking projects that utilize a mix of Large Language Models (LLMs) and traditional Machine Learning (ML) techniques. The role also includes coming up with novel research synthesis ideas using Natural Language Processing (NLP) techniques and demonstrating their business value. The AI/ML Engineer will collaborate closely with external partners to fuel the company's growth, contribute to product decisions, direction, and prioritization, and help shape the engineering culture of the organization. The company is looking for product-minded ML engineers who are opinionated about their work, have strong communication skills, and are eager to contribute to product decisions. The ideal candidate should have experience building ML models from the ground up in a product-focused organization and be able to drive everything from data gathering to model serving.",
+      "sources": [
+        "AI role.pdf",
+        "AI role.pdf",
+        "AI role.pdf",
+        "AI role.pdf"
+      ],
+      "latency": 2.321025848388672
+    }
+  ]
+}
