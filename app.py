@@ -198,7 +198,7 @@ def load_css():
     
     .upload-section {
         background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-        padding: 2rem;
+        padding: 0.5rem;
         border-radius: 20px;
         border: 2px dashed #f59e0b;
         text-align: center;
@@ -382,14 +382,17 @@ class RAGSystem:
         self.chain = None
         self.memory = None
         self.documents = []
-        self.evaluation_model = None
 
     def initialize_embeddings(
         self, api_key: str, model_name: str = "text-embedding-ada-002"
     ):
         """Initialize OpenAI embeddings"""
-        os.environ["OPENAI_API_KEY"] = api_key
-        self.embeddings = OpenAIEmbeddings(model=model_name)
+        try:
+            os.environ["OPENAI_API_KEY"] = api_key
+            self.embeddings = OpenAIEmbeddings(model=model_name)
+            print(f"✅ Embeddings initialized with {model_name}")
+        except Exception as e:
+            raise ValueError(f"Failed to initialize embeddings: {str(e)}")
 
     def load_documents(self, uploaded_files, text_input: str = "") -> List[Document]:
         """Load documents from various sources"""
@@ -418,33 +421,41 @@ class RAGSystem:
                     continue
 
                 docs = loader.load()
+                if not docs:
+                    st.warning(f"No content found in {uploaded_file.name}")
+                    continue
+
                 for doc in docs:
-                    # Clean and encode document content properly
-                    doc.page_content = self._clean_text(doc.page_content)
-                    doc.metadata["source"] = uploaded_file.name
-                documents.extend(docs)
+                    if doc.page_content and doc.page_content.strip():
+                        # Clean and encode document content properly
+                        doc.page_content = self._clean_text(doc.page_content)
+                        doc.metadata["source"] = uploaded_file.name
+                        documents.append(doc)
 
             except Exception as e:
                 # Use safe error message without Unicode characters
                 error_msg = str(e).encode("ascii", "ignore").decode("ascii")
                 st.error(f"Error loading {uploaded_file.name}: {error_msg}")
             finally:
-                os.unlink(tmp_file_path)
+                if os.path.exists(tmp_file_path):
+                    os.unlink(tmp_file_path)
 
         # Process text input
         if text_input.strip():
             # Clean the text input to handle Unicode properly
             clean_text = self._clean_text(text_input)
-            documents.append(
-                Document(
-                    page_content=clean_text,
-                    metadata={
-                        "source": "Text Input",
-                        "timestamp": datetime.now().isoformat(),
-                    },
+            if clean_text.strip():
+                documents.append(
+                    Document(
+                        page_content=clean_text,
+                        metadata={
+                            "source": "Text Input",
+                            "timestamp": datetime.now().isoformat(),
+                        },
+                    )
                 )
-            )
 
+        print(f"📚 Loaded {len(documents)} documents")
         return documents
 
     def _clean_text(self, text: str) -> str:
@@ -505,6 +516,9 @@ class RAGSystem:
         if not chunks:
             raise ValueError("No documents to process")
 
+        if not self.embeddings:
+            raise ValueError("Embeddings not initialized. Please set up API key first.")
+
         # Validate that chunks have content
         valid_chunks = [
             chunk
@@ -513,10 +527,15 @@ class RAGSystem:
         ]
 
         if not valid_chunks:
-            raise ValueError("No valid content found in documents")
+            raise ValueError(
+                "No valid content found in documents. Please check your files."
+            )
+
+        print(f"🔍 Processing {len(valid_chunks)} valid chunks...")
 
         try:
             # Use in-memory ChromaDB to avoid tenant/connection issues
+            print("📦 Creating vector store...")
             self.vectorstore = Chroma.from_documents(
                 documents=valid_chunks,
                 embedding=self.embeddings,
@@ -524,27 +543,33 @@ class RAGSystem:
             )
 
             # Test the vector store
+            print("🧪 Testing vector store...")
             test_results = self.vectorstore.similarity_search("test query", k=1)
 
             # Log for debugging
-            print(f"Created in-memory vector store with {len(valid_chunks)} chunks")
-            print(f"Vector store test: {len(test_results)} results")
+            print(f"✅ Created in-memory vector store with {len(valid_chunks)} chunks")
+            print(f"✅ Vector store test: {len(test_results)} results")
             if test_results:
-                print(f"Test result sample: {test_results[0].page_content[:100]}...")
+                print(f"📝 Test result sample: {test_results[0].page_content[:100]}...")
 
         except Exception as e:
-            print(f"Error creating vector store: {e}")
+            print(f"❌ Error creating vector store: {e}")
             # Fallback: Try with explicit collection name
             try:
+                print("🔄 Trying fallback method...")
                 self.vectorstore = Chroma.from_documents(
                     documents=valid_chunks,
                     embedding=self.embeddings,
                     collection_name="rag_documents",
                 )
-                print("Successfully created vector store with explicit collection name")
+                print(
+                    "✅ Successfully created vector store with explicit collection name"
+                )
             except Exception as e2:
-                print(f"Fallback also failed: {e2}")
+                print(f"❌ Fallback also failed: {e2}")
                 raise ValueError(f"Failed to create vector store: {str(e)}")
+
+        print("🎯 Vector store ready for queries!")
 
     def setup_qa_chain(
         self, model_name: str = "gpt-3.5-turbo", temperature: float = 0.1
@@ -734,32 +759,30 @@ def main():
     if "performance_data" not in st.session_state:
         st.session_state.performance_data = []
     if "evaluation_enabled" not in st.session_state:
-        st.session_state.evaluation_enabled = True
+        st.session_state.evaluation_enabled = False
+    if "question_input" not in st.session_state:
+        st.session_state.question_input = ""
 
     # Enhanced Sidebar
     with st.sidebar:
         st.markdown("### ⚙️ System Configuration")
 
         # API Key Section
-        with st.container():
-            st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-            st.markdown("#### 🔑 OpenAI Configuration")
-            api_key = st.text_input(
-                "API Key",
-                type="password",
-                placeholder="sk-...",
-                help="Enter your OpenAI API key to get started",
-            )
+        st.markdown("#### 🔑 OpenAI Configuration")
+        api_key = st.text_input(
+            "API Key",
+            type="password",
+            placeholder="sk-...",
+            help="Enter your OpenAI API key to get started",
+        )
 
-            if api_key:
-                st.success("🔓 API Key Connected!")
-            else:
-                st.warning("🔒 API Key Required")
-            st.markdown("</div>", unsafe_allow_html=True)
+        if api_key:
+            st.success("🔓 API Key Connected!")
+        else:
+            st.warning("🔒 API Key Required")
 
         if api_key:
             # Model Configuration
-            st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
             st.markdown("#### 🧠 AI Model Selection")
 
             model_options = ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo-preview"]
@@ -814,10 +837,8 @@ def main():
                 st.markdown(
                     create_status_card("AI System Ready!", "🚀"), unsafe_allow_html=True
                 )
-            st.markdown("</div>", unsafe_allow_html=True)
 
         # Enhanced Evaluation Toggle
-        st.markdown('<div class="evaluation-toggle">', unsafe_allow_html=True)
         st.markdown("#### 📊 Evaluation Settings")
 
         evaluation_enabled = st.toggle(
@@ -834,11 +855,8 @@ def main():
             st.info("🔴 Quick Mode: ON")
             st.caption("⚡ Faster responses without detailed metrics")
 
-        st.markdown("</div>", unsafe_allow_html=True)
-
         # Enhanced Performance Metrics
         if st.session_state.evaluation_enabled and st.session_state.performance_data:
-            st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
             st.markdown("#### 📈 Performance Analytics")
 
             df = pd.DataFrame(st.session_state.performance_data)
@@ -887,8 +905,6 @@ def main():
                 avg_quality = (avg_relevance + avg_faithfulness) / 2
                 st.metric("🎯 Avg Quality", f"{avg_quality:.2f}")
 
-            st.markdown("</div>", unsafe_allow_html=True)
-
     # Main Content
     if not api_key:
         st.markdown(
@@ -912,8 +928,7 @@ def main():
         st.markdown(
             """
             <div class="upload-section">
-                <h3>📤 Upload Your Documents</h3>
-                <p>Drag and drop files or click to browse</p>
+                <p>Drag and drop files below or click to browse</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1084,14 +1099,21 @@ def main():
         with col1:
             user_question = st.text_input(
                 "Your question",
+                value=st.session_state.question_input,
                 placeholder="What insights can you provide?",
                 label_visibility="collapsed",
+                key="question_input_field",
             )
+            # Update session state with current input
+            st.session_state.question_input = user_question
         with col2:
             ask_button = st.button("🚀 Ask", use_container_width=True)
 
         # Process question only when button is clicked
         if ask_button and user_question:
+            # Clear the input field immediately
+            st.session_state.question_input = ""
+
             # Add user message to chat history
             st.session_state.chat_history.append(
                 {"role": "user", "content": user_question}
